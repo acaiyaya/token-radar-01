@@ -1,14 +1,20 @@
-// A working token-radar-01 entry (Node 22, standard library only).
+// Token Radar (model radar-2): the entrypoint the grader runs.
 //
-// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
-// pre-token protocol with the model in lib/model.ts, writes the ranked board to /output/board.json, and
-// copies this repository's dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json,
-// the summary the judge reads, with the vendored make.fun library.
+//   node main.ts --input /input/snapshot.json        (output defaults to /output)
 //
-// The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
-// and dashboard/app.js read /output/data.js, which this program writes from the same board. A starting
-// point, not a winner: it covers the watchlist, states the model and gives every protocol a farm plan.
-// Change the model, the page or the plan; keep the gate's shape.
+// It reads the sealed snapshot, prices every rankable pre-token protocol with the model in
+// lib/model.ts, and writes five things to the output directory:
+//   board.json    the ranked board: watchlist coverage plus the early radar below the floor
+//   data.js       the same board as one script the static dashboard renders, no fetch, no network
+//   dashboard/    this repository's dashboard, copied verbatim
+//   screenshots/  this repository's screenshots of that dashboard, copied verbatim
+//   dossier.json  the summary the judge reads, rebuilt by the vendored make.fun library from the
+//                 finished output, so it is written last and matches byte for byte
+//
+// The board is checked against the gate's shape before anything is written: a board that misses
+// a watchlist slug, breaks rank order, or carries an out-of-shape farm plan fails the run here,
+// at build time, instead of at submission time. Two runs over the same snapshot produce the same
+// bytes: the model iterates in sorted order wherever a tie is possible.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -24,14 +30,20 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 /** The scorer's own caps (reference/gate.json): the text cap shapes the bytes, the rest refuse. */
 const TEXT_MAX_BYTES = 65_536;
 const SCREENSHOT_CAPS = { max: 4, max_bytes: 524_288 };
+const DASHBOARD_CAPS = { max_files: 400, max_bytes: 4_194_304 };
 const IMAGE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 
-/** --name <value> out of the arguments, or the fallback. */
+/** --name <value> or --name=<value> out of the arguments, or the fallback. */
 function arg(name: string, fallback: string): string {
   const at = process.argv.indexOf(`--${name}`);
   if (at >= 0 && at + 1 < process.argv.length) return process.argv[at + 1]!;
   const withEquals = process.argv.find((a) => a.startsWith(`--${name}=`));
   return withEquals === undefined ? fallback : withEquals.slice(name.length + 3);
+}
+
+/** A dollar figure for the run summary, grouped and without cents. */
+function usd(n: number): string {
+  return `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
 const inputArg = arg('input', '/input');
@@ -69,10 +81,15 @@ function copyFiles(from: string, to: string): string[] {
   return copied;
 }
 
-copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
+const dashFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
+if (!dashFiles.includes('index.html')) {
+  process.stderr.write('token radar: dashboard/ holds no index.html: the judge opens the page before it reads the board\n');
+  process.exit(1);
+}
+
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
-if (shots.length < 3) {
-  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);
+if (shots.length < 3 || shots.length > SCREENSHOT_CAPS.max) {
+  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3 or 4, the board, a detail view and a filtered view\n`);
   process.exit(1);
 }
 for (const name of shots) {
@@ -80,12 +97,21 @@ for (const name of shots) {
     process.stderr.write(`token radar: screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters\n`);
     process.exit(1);
   }
+  const bytes = statSync(join(out, 'screenshots', name)).size;
+  if (bytes > SCREENSHOT_CAPS.max_bytes) {
+    process.stderr.write(`token radar: screenshots/${name} is ${bytes} bytes: the cap is ${SCREENSHOT_CAPS.max_bytes}\n`);
+    process.exit(1);
+  }
 }
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
-writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
+writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS }));
 
+const top = board.slice(0, 3).map((r) => `#${r.rank} ${r.name} ${usd(r.implied_value_usd)}`).join('; ');
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+  `token radar ${radar.model_version}: ${snapshot.protocols.length} protocols scanned, ${snapshot.watchlist.length} on the watchlist, ` +
+    `${board.length} rows ranked (${radar.early_size} beyond the watchlist), ${radar.live_size} live-token protocols set aside\n` +
+    `token radar: global price-to-TVL multiple ${radar.global_multiple}x across ${radar.categories.length} categories; top of the board: ${top}\n` +
+    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ` +
+    `${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
