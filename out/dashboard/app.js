@@ -233,7 +233,7 @@
       ['TVL', fmtUsd(row.tvl_usd)],
       ['7d change', fmtPct(row.change_7d)],
       ['Age', fmtAge(row.age_days) + (row.listed_at ? ' (listed ' + row.listed_at + ')' : '')],
-      ['Chains', row.chains.join(', ') || 'none recorded'],
+      ['Chains', row.chains.length === 0 ? 'none recorded' : row.chains.slice(0, 4).join(', ') + (row.chains.length > 4 ? ' +' + (row.chains.length - 4) + ' more' : '')],
       ['Set', row.watchlist ? 'Watchlist' : 'Early radar'],
       ['Category peers', cat ? cat.live_count + ' live' : 'no live peers'],
       ['Implied / TVL', row.tvl_usd > 0 ? fmtMult(row.implied_value_usd / row.tvl_usd) : 'n/a'],

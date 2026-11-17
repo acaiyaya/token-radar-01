@@ -82,7 +82,9 @@ code { font-family: var(--font-num); font-size: 0.92em; color: var(--gold); }
 /* Tables */
 .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 table.board { border-collapse: collapse; width: 100%; min-width: 860px; }
-.board th, .board td { padding: 9px 12px; text-align: left; white-space: nowrap; }
+.board th, .board td { padding: 9px 10px; text-align: left; white-space: nowrap; }
+.board td.chains { max-width: 198px; overflow: hidden; text-overflow: ellipsis; }
+.board td.cat { max-width: 148px; overflow: hidden; text-overflow: ellipsis; }
 .board thead th {
   font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint);
   border-bottom: 1px solid var(--border); background: var(--surface-2); position: sticky; top: 0;
