@@ -1,12 +1,14 @@
-// Token Radar model "radar-2": one sealed snapshot in, one ranked board out.
+// Token Radar model "radar-3": one sealed snapshot in, one ranked board out.
 //
 // Where the house model multiplies every protocol's TVL by one flat constant, this model prices a
 // pre-token protocol the way the snapshot's own market prices its peers:
 //
 //   multiple   = the price-to-TVL multiple of the protocol's category, read off the snapshot's
 //                live-token protocols (median market cap / TVL per category), shrunk toward the
-//                snapshot-wide median when a category has few live peers, so a thin category
-//                cannot produce a wild multiple
+//                snapshot-wide median by the peer count, so a thin category cannot produce a
+//                wild multiple. radar-3 shrinks harder than radar-2 did (k = 8, not 4): a
+//                category priced by a single live peer is a rumour, not a market, and the board
+//                now says so on every row, with the peer count and a confidence word
 //   momentum   = 1 + MOMENTUM_WEIGHT x tanh(change_7d / MOMENTUM_SCALE): a saturating read of the
 //                week's TVL growth, so one freak week cannot dominate the board
 //   maturity   = a log-normal bump peaking at MATURITY_PEAK_DAYS: old enough to be proven, young
@@ -14,6 +16,11 @@
 //                with no token scores lower than one in the launch window, not higher
 //   chainBonus = 1 + CHAIN_BONUS x min(extra chains, 4): a small premium for multi-chain traction
 //   implied    = max(1, round(tvl x multiple x momentum x maturity x chainBonus))
+//
+// Every row also carries the model's working in words (why it ranks where it ranks, from its own
+// four factors and its category's peer count) and its farm plan's totals (capital the plan
+// deploys, the fees it expects to burn, the hours it takes), so a reader never has to take a
+// rank, or a plan, on faith.
 //
 // Every input is a field of the sealed snapshot. No protocol name, slug or category string is ever
 // special-cased in the scoring: the same code path prices every row, and the per-category figures
@@ -67,7 +74,7 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  shrink_k: 4,
+  shrink_k: 8,
   momentum_weight: 0.45,
   momentum_scale: 60,
   maturity_peak_days: 540,
@@ -80,7 +87,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the board rows carry it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** One category's live-peer statistics, computed from the snapshot at run time. */
 export interface CategoryStat {
@@ -95,6 +102,13 @@ export interface FarmStep {
   text: string;
   cost: string;
   time: string;
+}
+
+/** A farm plan's totals: the capital it deploys, the fees it expects to burn, the time it takes. */
+export interface FarmTotal {
+  capital_usd: number;
+  est_fees: string;
+  total_time: string;
 }
 
 /** One row of board.json: the ranked board's row, with the model's working shown. */
@@ -123,7 +137,9 @@ export interface BoardRow {
     maturity_multiplier: number;
     chain_multiplier: number;
   };
+  why: string;
   farm_steps: string[];
+  farm_total: FarmTotal;
 }
 
 /** The dashboard's view of one board row: everything the page renders or recomputes. */
@@ -144,7 +160,9 @@ export interface RadarRow {
   momentum_multiplier: number;
   maturity_multiplier: number;
   chain_multiplier: number;
+  why: string;
   farm_steps: string[];
+  farm_total: FarmTotal;
 }
 
 /** A live-token protocol: it already trades, so the page shows the market's own value. */
@@ -292,6 +310,72 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
 
+/** A multiple the way the dashboard prints it: two decimals and an x. */
+const mult2 = (n: number): string => `${n.toFixed(2)}x`;
+
+/** A signed percent with one decimal, the way the dashboard prints a 7d change. */
+const pct1 = (n: number): string => `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+
+/** How far a category's own multiple can be trusted, from its live-peer count alone. */
+export function confidenceWord(liveCount: number): string {
+  if (liveCount <= 0) return 'none';
+  if (liveCount <= 2) return 'thin';
+  if (liveCount <= 5) return 'fair';
+  return 'solid';
+}
+
+/**
+ * Why a row ranks where it ranks, in words, from its own four factors and its category's peer
+ * count. Nothing here is looked up by name: the same template reads every row's own figures.
+ */
+export function whyText(
+  p: SnapshotProtocol,
+  priced: Priced,
+  multiples: { global: number; stats: CategoryStat[]; used: Map<string, number> },
+  model: ModelConstants,
+): string {
+  const parts: string[] = [];
+  const effective = p.tvl_usd > 0 ? priced.implied / p.tvl_usd : 0;
+  parts.push(`Priced at ${mult2(effective)} of TVL.`);
+  const stat = p.category === null ? undefined : multiples.stats.find((s) => s.category === p.category);
+  if (p.category === null || stat === undefined) {
+    parts.push(`Its category records no live-token peers in this snapshot, so it is priced at the global median multiple of ${mult2(multiples.global)}.`);
+  } else {
+    parts.push(
+      `The ${p.category} multiple is ${mult2(priced.categoryMultiple)}: the median of ${stat.live_count} live peer${stat.live_count === 1 ? '' : 's'} is ${mult2(stat.median_multiple)}, ` +
+        `shrunk toward the ${mult2(multiples.global)} global median (peer confidence: ${confidenceWord(stat.live_count)}).`,
+    );
+  }
+  if (p.change_7d === null) {
+    parts.push(`No 7d TVL change is recorded, so momentum is neutral at ${mult2(priced.momentumMult)}.`);
+  } else {
+    parts.push(`Momentum is ${mult2(priced.momentumMult)} on ${pct1(p.change_7d)} TVL over 7 days.`);
+  }
+  if (priced.age === null) {
+    parts.push(`No listing date is recorded, so maturity is priced at the assumed ${model.unknown_age_days} days: ${mult2(priced.maturityMult)}.`);
+  } else {
+    parts.push(`At ${priced.age} days old, against the ${model.maturity_peak_days}-day launch-window peak, maturity is ${mult2(priced.maturityMult)}.`);
+  }
+  parts.push(`It records ${p.chains.length} chain${p.chains.length === 1 ? '' : 's'}, for a chain-breadth factor of ${mult2(priced.chainMult)}.`);
+  return parts.join(' ');
+}
+
+/**
+ * A farm plan's totals, from the same figures its steps are priced with: the capital the plan
+ * puts to work (position plus funding buffer), the fees its transactions are expected to burn
+ * (withdrawal, setup, the weekly visits, the two-tranche unwind), and the hours it takes.
+ */
+export function farmTotals(p: SnapshotProtocol, age: number | null): FarmTotal {
+  const capital = capitalFor(p);
+  const weeks = weeksFor(age);
+  const mainnet = isMainnet(chainOf(p));
+  const low = Math.round((mainnet ? 5 : 2) + (mainnet ? 5 : 0.5) + (mainnet ? 8 : 1) * weeks + (mainnet ? 10 : 1));
+  const high = Math.round((mainnet ? 5 : 2) + (mainnet ? 15 : 0.5) + (mainnet ? 8 : 1) * weeks + (mainnet ? 30 : 1));
+  const minutes = 55 + 20 * weeks + 30;
+  const time = minutes >= 60 ? `about ${Math.floor(minutes / 60)}h ${minutes % 60 === 0 ? '' : `${minutes % 60}m `}spread over ${weeks} weeks` : `about ${minutes}m spread over ${weeks} weeks`;
+  return { capital_usd: capital + 50, est_fees: low === high ? `$${low}` : `$${low} to $${high}`, total_time: time.trim() };
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
   const index = bySlug(snapshot.protocols);
@@ -343,6 +427,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       chain_multiplier: round4(s.priced.chainMult),
     },
     farm_steps: farmSteps(s.p, s.priced.age).map(stepText),
+    why: whyText(s.p, s.priced, multiples, model),
+    farm_total: farmTotals(s.p, s.priced.age),
   }));
 }
 
@@ -514,7 +600,9 @@ export function radarRow(row: BoardRow): RadarRow {
     momentum_multiplier: row.model.momentum_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
+    why: row.why,
     farm_steps: row.farm_steps,
+    farm_total: row.farm_total,
   };
 }
 

@@ -1,4 +1,4 @@
-// Token Radar (model radar-2): the entrypoint the grader runs.
+// Token Radar (model radar-3): the entrypoint the grader runs.
 //
 //   node main.ts --input /input/snapshot.json        (output defaults to /output)
 //

@@ -1,4 +1,4 @@
-// Token Launch Radar dashboard (model radar-2).
+// Token Launch Radar dashboard (model radar-3).
 //
 // Reads window.RADAR from ../data.js (written by main.ts beside dashboard/) and renders three
 // views: the ranked board with filters and a per-protocol detail panel, the live-token peer set
@@ -252,10 +252,19 @@
     panel.appendChild(el('p', { class: 'view-note', text:
       'Implied value = TVL \u00D7 category multiple \u00D7 momentum \u00D7 maturity \u00D7 chain breadth. ' +
       'The category multiple is the median market-cap-to-TVL of this category\u2019s live-token peers in the same snapshot' +
-      (cat ? ' (' + cat.live_count + ' peers, median ' + fmtMult(cat.median_multiple) + ')' : '') +
+      (cat ? ' (' + cat.live_count + ' peer' + (cat.live_count === 1 ? '' : 's') + ', median ' + fmtMult(cat.median_multiple) + ')' : '') +
       ', shrunk toward the global median of ' + fmtMult(DATA.global_multiple) + '.' }));
+    if (row.why) {
+      panel.appendChild(el('h3', { text: 'Why it ranks here' }));
+      panel.appendChild(el('p', { class: 'view-note', text: row.why }));
+    }
 
     panel.appendChild(el('h3', { text: 'Farm plan' }));
+    if (row.farm_total) {
+      panel.appendChild(el('p', { class: 'view-note', text:
+        'Plan totals: ' + fmtUsd(row.farm_total.capital_usd) + ' of capital put to work \u00B7 expected fees ' +
+        row.farm_total.est_fees + ' \u00B7 ' + row.farm_total.total_time + '.' }));
+    }
     var list = el('ol', { class: 'farm' });
     row.farm_steps.forEach(function (s) { list.appendChild(el('li', { text: s })); });
     panel.appendChild(list);
@@ -287,7 +296,7 @@
     formula.innerHTML = 'implied = TVL &times; <span class="hl">category multiple</span> &times; <span class="hl">momentum</span> &times; <span class="hl">maturity</span> &times; <span class="hl">chain breadth</span>';
     box.appendChild(formula);
     var cards = [
-      ['Category multiple', 'The snapshot\u2019s live-token protocols are the market\u2019s own answer to \u201Cwhat is a dollar of TVL worth here?\u201D For each category the model takes the median market-cap-to-TVL of its live peers, then shrinks it toward the global median (' + fmtMult(DATA.global_multiple) + ') by the peer count, so a category with two peers cannot set a wild price. Capped between 0.05x and 3x.'],
+      ['Category multiple', 'The snapshot\u2019s live-token protocols are the market\u2019s own answer to \u201Cwhat is a dollar of TVL worth here?\u201D For each category the model takes the median market-cap-to-TVL of its live peers, then shrinks it toward the global median (' + fmtMult(DATA.global_multiple) + ') with a strength of ' + MODEL.shrink_k + ' phantom peers, so a category priced by one or two peers cannot set a wild price. Every row states its peer count and a confidence word (thin, fair, solid), and its detail view shows the shrinkage in words. Capped between 0.05x and 3x.'],
       ['Momentum', 'One week of TVL growth, passed through a saturating curve: 1 + ' + MODEL.momentum_weight + ' \u00D7 tanh(change / ' + MODEL.momentum_scale + '). A protocol doubling in a week earns most of the +' + Math.round(MODEL.momentum_weight * 100) + '% swing; a protocol up 400% earns barely more, so a single freak week cannot buy the top of the board.'],
       ['Maturity', 'A log-normal bump peaking at ' + MODEL.maturity_peak_days + ' days. Younger protocols are unproven; much older ones have had years to launch and have not, which is itself information. The floor is ' + MODEL.maturity_floor + 'x, so age alone never zeroes a row. Unknown listing dates are priced at ' + MODEL.unknown_age_days + ' days.'],
       ['Chain breadth', '+' + Math.round(MODEL.chain_bonus * 100) + '% per additional chain, up to four. Multi-chain traction is a weak but real signal that a protocol is winning distribution, priced small enough that it breaks ties rather than making them.'],
